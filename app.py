@@ -30,7 +30,7 @@ MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 FALLBACK_MODEL_NAME = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 SIGNAL_TTL_SECONDS = 15 * 60
 MAX_ROOM_MEMBERS = 2
-_rooms: dict[str, dict[str, object]] = defaultdict(lambda: {"peers": {}, "signals": []})
+_rooms: dict[str, dict[str, object]] = defaultdict(lambda: {"peers": {}, "signals": [], "mode": None})
 _rooms_lock = Lock()
 _supabase: Client | None = None
 
@@ -115,7 +115,8 @@ def index():
 
 @app.get("/create")
 def create_room_page():
-    return render_template("create.html", topics=TOPICS)
+    mode = "chat" if request.args.get("mode") == "chat" else "video"
+    return render_template("create.html", topics=TOPICS, room_mode=mode)
 
 
 @app.get("/join")
@@ -127,7 +128,8 @@ def join_room_page():
 @app.get("/room/<room_code_val>")
 def room_page(room_code_val: str):
     code = room_code(room_code_val)
-    return render_template("room.html", room_code=code, topics=TOPICS, ice_servers=webrtc_ice_servers())
+    mode = "chat" if request.args.get("mode") == "chat" else "video"
+    return render_template("room.html", room_code=code, room_mode=mode, topics=TOPICS, ice_servers=webrtc_ice_servers())
 
 
 @app.get("/room")
@@ -136,7 +138,8 @@ def room_query():
     if not code:
         from flask import redirect, url_for
         return redirect(url_for("join_room_page"))
-    return render_template("room.html", room_code=code, topics=TOPICS, ice_servers=webrtc_ice_servers())
+    mode = "chat" if request.args.get("mode") == "chat" else "video"
+    return render_template("room.html", room_code=code, room_mode=mode, topics=TOPICS, ice_servers=webrtc_ice_servers())
 
 
 @app.get("/api/topics")
@@ -152,13 +155,16 @@ def room_status_check():
     client = supabase_client()
     if client:
         rows = supabase_room_table(client).select("peer_id,data").eq("room_code", code).execute().data or []
-        count = sum(1 for row in rows if row.get("data", {}).get("type") == "peer")
+        peer_rows = [row for row in rows if row.get("data", {}).get("type") == "peer"]
+        count = len(peer_rows)
+        mode = peer_rows[0].get("data", {}).get("mode", "video") if peer_rows else "video"
     else:
         with _rooms_lock:
             clean_expired_rooms()
             room = _rooms.get(code)
             count = len(room["peers"]) if room else 0
-    return jsonify({"room": code, "peerCount": count, "exists": count > 0, "maxMembers": MAX_ROOM_MEMBERS, "available": count < MAX_ROOM_MEMBERS})
+            mode = room.get("mode", "video") if room else "video"
+    return jsonify({"room": code, "peerCount": count, "exists": count > 0, "maxMembers": MAX_ROOM_MEMBERS, "available": count < MAX_ROOM_MEMBERS, "mode": mode})
 
 
 @app.post("/api/rooms/join")
@@ -168,6 +174,9 @@ def join_room():
     peer_id = str(data.get("peerId", ""))[:80]
     name = str(data.get("name", "Guest"))[:30].strip() or "Guest"
     is_host = data.get("host") is True
+    requested_mode = str(data.get("mode", "video"))
+    if requested_mode not in {"video", "chat"}:
+        return error("Unsupported room mode.")
     if len(code) < 3 or not peer_id:
         return error("Enter a room code of at least 3 characters.")
     client = supabase_client()
@@ -180,7 +189,8 @@ def join_room():
             return error("Room not found. Check the room code and try again.", 404)
         if not existing and len(peer_rows) >= MAX_ROOM_MEMBERS:
             return error(f"This practice room already has {MAX_ROOM_MEMBERS} people.", 409)
-        peer_data = {"type": "peer", "name": name, "seen": time.time()}
+        mode = peer_rows[0].get("data", {}).get("mode", "video") if peer_rows else requested_mode
+        peer_data = {"type": "peer", "name": name, "seen": time.time(), "mode": mode}
         if existing:
             table.update({"data": peer_data}).eq("id", existing["id"]).execute()
         else:
@@ -192,12 +202,16 @@ def join_room():
             clean_expired_rooms()
             if code not in _rooms and not is_host:
                 return error("Room not found. Check the room code and try again.", 404)
-            peers = _rooms[code]["peers"]
+            room = _rooms[code]
+            peers = room["peers"]
             if peer_id not in peers and len(peers) >= MAX_ROOM_MEMBERS:
                 return error(f"This practice room already has {MAX_ROOM_MEMBERS} people.", 409)
+            if not peers:
+                room["mode"] = requested_mode
+            mode = room.get("mode") or "video"
             peers[peer_id] = {"name": name, "seen": time.time()}
         other_peers = [{"id": key, "name": value["name"]} for key, value in peers.items() if key != peer_id]
-    return jsonify({"room": code, "peers": other_peers})
+    return jsonify({"room": code, "peers": other_peers, "mode": mode})
 
 
 @app.post("/api/rooms/signal")

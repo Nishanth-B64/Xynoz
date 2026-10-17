@@ -24,12 +24,19 @@
         <div class="page-container-centered">
           <div class="page-header-block">
             <div class="eyebrow eyebrow-pill">HOST A SESSION</div>
-            <h1>Create a Practice Room</h1>
-            <p class="lede">Generate a private room, test your microphone & camera, and invite your conversation partner.</p>
+            <h1>{{ "Create a P2P Chat Room" if room_mode == "chat" else "Create a Practice Room" }}</h1>
+            <p class="lede">
+              {% if room_mode == "chat" %}
+              Generate a private room for peer-to-peer chat and file sharing, then invite others using its room code.
+              {% else %}
+              Generate a private room, test your microphone & camera, and invite your conversation partner.
+              {% endif %}
+            </p>
           </div>
 
           <div class="glass-card">
             <form id="createRoomForm" onsubmit="event.preventDefault(); launchRoom();">
+              <input id="roomMode" type="hidden" value="{{ room_mode }}">
               <div class="form-group">
                 <label for="hostName">Your Display Name</label>
                 <input id="hostName" class="input-field" maxlength="30" placeholder="e.g. Alex" required>
@@ -51,6 +58,7 @@
                 </div>
               </div>
 
+              {% if room_mode != "chat" %}
               <div class="form-group">
                 <label for="conversationFocus">Conversation Topic / Goal</label>
                 <select id="conversationFocus" class="input-field" style="background: rgba(8, 13, 20, 0.7); cursor: pointer;">
@@ -90,9 +98,10 @@
                   <span id="deviceStatusText" style="font-size: 12px; color: var(--text-muted);">Camera and mic not tested</span>
                 </div>
               </div>
+              {% endif %}
 
               <button type="submit" id="submitLaunchBtn" class="btn-primary" style="width: 100%; padding: 15px;">
-                <span>🚀 Launch Practice Room</span>
+                <span>{{ "💬 Launch P2P Chat Room" if room_mode == "chat" else "🚀 Launch Practice Room" }}</span>
                 <span style="font-size: 18px;">→</span>
               </button>
             </form>

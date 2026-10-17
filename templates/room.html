@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Practice Room {{ room_code }} · Xynoz</title>
+    <title>{{ "P2P Chat" if room_mode == "chat" else "Practice Room" }} {{ room_code }} · Xynoz</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
   </head>
-  <body>
+  <body class="{{ 'chat-only' if room_mode == 'chat' else '' }}">
     <div class="app-shell">
       <header class="room-header">
         <a class="brand" href="/" aria-label="Xynoz Home">

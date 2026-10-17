@@ -356,6 +356,29 @@ p.lede {
   flex-wrap: wrap;
 }
 
+.chat-only .room-grid {
+  display: block;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.chat-only .video-stage > :not(.chat-card),
+.chat-only .coach-column {
+  display: none;
+}
+
+.chat-only .chat-card {
+  min-height: min(72vh, 720px);
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-only .chat-messages {
+  flex: 1;
+  min-height: 360px;
+  max-height: none;
+}
+
 .hero-features {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

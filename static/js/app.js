@@ -213,14 +213,15 @@ function initCreatePage() {
 function launchRoom() {
   const name = $('hostName').value.trim() || 'Host';
   const code = $('roomCode').value.trim().toUpperCase();
+  const mode = $('roomMode')?.value === 'chat' ? 'chat' : 'video';
   if (code.length < 3) return alert('Room code must be at least 3 characters.');
   localStorage.setItem(DISPLAY_NAME_STORAGE_KEY, name);
   cleanupDevicePreview();
-  const selectedTopic = $('conversationFocus')?.value === 'custom'
+  const selectedTopic = mode === 'chat' ? '' : $('conversationFocus')?.value === 'custom'
     ? $('customTopic')?.value.trim()
     : $('conversationFocus')?.value;
   const topicParam = selectedTopic ? `&topic=${encodeURIComponent(selectedTopic)}` : '';
-  window.location.href = `/room/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}${topicParam}&host=1`;
+  window.location.href = `/room/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}${topicParam}&host=1&mode=${mode}`;
 }
 
 // --------------------------------------------------------------------------
@@ -258,7 +259,8 @@ async function proceedToRoom() {
     if (!roomExists) throw new Error('Room not found. Check the room code and try again.');
     localStorage.setItem(DISPLAY_NAME_STORAGE_KEY, name);
     cleanupDevicePreview();
-    window.location.href = `/room/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}`;
+    const modeParam = room.mode === 'chat' ? '&mode=chat' : '';
+    window.location.href = `/room/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}${modeParam}`;
   } catch (error) {
     if (errorEl) errorEl.textContent = error.message;
     else showToast(error.message, '⚠️');
@@ -289,8 +291,9 @@ const state = {
   audioChunks: [],
   fileTransfers: new Map(),
   pendingCandidates: new Map(),
-  topic: 0
-  ,customTopic: ''
+  topic: 0,
+  customTopic: '',
+  chatOnly: false
 };
 
 const rtcConfig = {
@@ -478,7 +481,7 @@ function setupChatChannel(channel) {
   channel.onopen = () => {
     if ($('chatStatus')) $('chatStatus').textContent = 'Connected';
     setChatControlsEnabled(true);
-    sendCameraStatus(Boolean(state.stream?.getVideoTracks().length));
+    if (!state.chatOnly) sendCameraStatus(Boolean(state.stream?.getVideoTracks().length));
   };
   channel.onclose = () => {
     if ($('chatStatus')) $('chatStatus').textContent = 'Disconnected';
@@ -764,6 +767,8 @@ async function initRoomPage() {
   state.room = roomCode;
   const urlParams = new URLSearchParams(window.location.search);
   const isHost = urlParams.get('host') === '1';
+  state.chatOnly = urlParams.get('mode') === 'chat';
+  document.body.classList.toggle('chat-only', state.chatOnly);
 
   // Extract display name
   const nameFromUrl = urlParams.get('name');
@@ -807,12 +812,15 @@ async function initRoomPage() {
     const data = await api('/api/rooms/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: state.name, room: state.room, peerId: state.peerId, host: isHost })
+      body: JSON.stringify({ name: state.name, room: state.room, peerId: state.peerId, host: isHost, mode: urlParams.get('mode') === 'chat' ? 'chat' : 'video' })
     });
+    state.chatOnly = data.mode === 'chat';
+    document.body.classList.toggle('chat-only', state.chatOnly);
     data.peers.forEach(peer => {
       state.peers.set(peer.id, peer);
       createRemoteTile(peer);
     });
+    if (state.chatOnly) setCallStatus('P2P chat room · no camera or microphone');
   } catch (err) {
     setCallStatus(`Error: ${err.message}`);
     showToast(err.message, '⚠️');
@@ -825,14 +833,18 @@ async function initRoomPage() {
   });
 
   // Device permissions should not prevent the peer from joining the room.
-  try {
-    setCallStatus(state.peers.size ? 'Starting camera & audio…' : 'Waiting for participant (1/2)');
-    await getMedia();
-  } catch (err) {
-    console.warn('Media setup failed:', err);
-    showToast('Joined without camera or microphone. Check browser permissions.', '⚠️');
+  if (!state.chatOnly) {
+    try {
+      setCallStatus(state.peers.size ? 'Starting camera & audio…' : 'Waiting for participant (1/2)');
+      await getMedia();
+    } catch (err) {
+      console.warn('Media setup failed:', err);
+      showToast('Joined without camera or microphone. Check browser permissions.', '⚠️');
+    }
   }
-  setCallStatus(state.peers.size ? 'Connecting to participant…' : 'Waiting for participant (1/2)');
+  setCallStatus(state.chatOnly
+    ? (state.peers.size ? 'Connecting to chat participant…' : 'Waiting for chat participant (1/2)')
+    : (state.peers.size ? 'Connecting to participant…' : 'Waiting for participant (1/2)'));
   startPolling();
   showToast(`Joined room ${state.room}`, '🎉');
 
