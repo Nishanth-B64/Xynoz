@@ -113,6 +113,26 @@ def room_member_limit(mode: str) -> int:
     return MAX_CHAT_ROOM_MEMBERS if mode == "chat" else MAX_VIDEO_ROOM_MEMBERS
 
 
+def active_supabase_room_peers(table, code: str) -> list[dict[str, object]]:
+    rows = table.select("id,peer_id,data").eq("room_code", code).execute().data or []
+    peer_rows = [row for row in rows if row.get("data", {}).get("type") == "peer"]
+    now = time.time()
+    stale_ids = []
+    active_rows = []
+    for row in peer_rows:
+        try:
+            is_stale = now - float(row["data"].get("seen", 0)) >= SIGNAL_TTL_SECONDS
+        except (TypeError, ValueError):
+            is_stale = True
+        if is_stale:
+            stale_ids.append(row["id"])
+        else:
+            active_rows.append(row)
+    if stale_ids:
+        table.delete().in_("id", stale_ids).execute()
+    return active_rows
+
+
 @app.get("/")
 def index():
     return render_template("index.html", topics=TOPICS)
@@ -159,8 +179,7 @@ def room_status_check():
         return error("Room code required")
     client = supabase_client()
     if client:
-        rows = supabase_room_table(client).select("peer_id,data").eq("room_code", code).execute().data or []
-        peer_rows = [row for row in rows if row.get("data", {}).get("type") == "peer"]
+        peer_rows = active_supabase_room_peers(supabase_room_table(client), code)
         count = len(peer_rows)
         mode = peer_rows[0].get("data", {}).get("mode", "video") if peer_rows else "video"
     else:
@@ -188,8 +207,7 @@ def join_room():
     client = supabase_client()
     if client:
         table = supabase_room_table(client)
-        rows = table.select("id,peer_id,data").eq("room_code", code).execute().data or []
-        peer_rows = [row for row in rows if row.get("data", {}).get("type") == "peer"]
+        peer_rows = active_supabase_room_peers(table, code)
         existing = next((row for row in peer_rows if row["peer_id"] == peer_id), None)
         if not peer_rows and not is_host:
             return error("Room not found. Check the room code and try again.", 404)
