@@ -278,7 +278,7 @@ const state = {
   name: 'You',
   partner: null,
   pc: null,
-  chatChannel: null,
+  chatChannels: new Map(),
   connections: new Map(),
   peers: new Map(),
   screenTrack: null,
@@ -290,6 +290,7 @@ const state = {
   audioContext: null,
   audioChunks: [],
   fileTransfers: new Map(),
+  activeFileTransfers: new Map(),
   pendingCandidates: new Map(),
   topic: 0,
   customTopic: '',
@@ -339,8 +340,7 @@ function setRemoteCameraState(peerId, cameraOn) {
 }
 
 function sendCameraStatus(cameraOn) {
-  if (!state.chatChannel || state.chatChannel.readyState !== 'open') return;
-  state.chatChannel.send(JSON.stringify({ type: 'camera-status', cameraOn }));
+  broadcastChatMessage({ type: 'camera-status', cameraOn });
 }
 
 async function getMedia() {
@@ -409,8 +409,7 @@ function createChatActions(message, text, own) {
     deleteButton.textContent = 'Delete';
     deleteButton.title = 'Delete message';
     deleteButton.addEventListener('click', () => {
-      if (!state.chatChannel || state.chatChannel.readyState !== 'open') return;
-      state.chatChannel.send(JSON.stringify({ type: 'chat-delete', id: message.dataset.messageId }));
+      broadcastChatMessage({ type: 'chat-delete', id: message.dataset.messageId });
       message.remove();
     });
     actions.appendChild(deleteButton);
@@ -465,6 +464,15 @@ function setChatControlsEnabled(enabled) {
   if ($('chatAttachBtn')) $('chatAttachBtn').disabled = !enabled;
 }
 
+function openChatChannels() {
+  return [...state.chatChannels.values()].filter(channel => channel.readyState === 'open');
+}
+
+function broadcastChatMessage(message) {
+  const payload = JSON.stringify(message);
+  for (const channel of openChatChannels()) channel.send(payload);
+}
+
 function waitForChatBuffer(channel) {
   return new Promise(resolve => {
     const check = () => {
@@ -476,20 +484,26 @@ function waitForChatBuffer(channel) {
 }
 
 function setupChatChannel(channel) {
-  state.chatChannel = channel;
+  state.chatChannels.set(channel._peerId, channel);
   channel.binaryType = 'arraybuffer';
   channel.onopen = () => {
-    if ($('chatStatus')) $('chatStatus').textContent = 'Connected';
+    const connectedCount = openChatChannels().length;
+    if ($('chatStatus')) $('chatStatus').textContent = `${connectedCount} participant${connectedCount === 1 ? '' : 's'} connected`;
     setChatControlsEnabled(true);
     if (!state.chatOnly) sendCameraStatus(Boolean(state.stream?.getVideoTracks().length));
   };
   channel.onclose = () => {
-    if ($('chatStatus')) $('chatStatus').textContent = 'Disconnected';
-    setChatControlsEnabled(false);
+    if (state.chatChannels.get(channel._peerId) === channel) state.chatChannels.delete(channel._peerId);
+    const connectedCount = openChatChannels().length;
+    if ($('chatStatus')) $('chatStatus').textContent = connectedCount
+      ? `${connectedCount} participant${connectedCount === 1 ? '' : 's'} connected`
+      : 'Disconnected';
+    setChatControlsEnabled(connectedCount > 0);
   };
   channel.onmessage = async (event) => {
     if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
-      const transfer = state.fileTransfers.get(state.activeFileTransferId);
+      const transferId = state.activeFileTransfers.get(channel._peerId);
+      const transfer = state.fileTransfers.get(transferId);
       if (!transfer) return;
       transfer.chunks.push(event.data instanceof Blob ? await event.data.arrayBuffer() : event.data);
       transfer.received += transfer.chunks.at(-1).byteLength;
@@ -499,7 +513,7 @@ function setupChatChannel(channel) {
       const message = JSON.parse(event.data);
       if (message.type === 'file-start') {
         if (message.size > CHAT_FILE_MAX_BYTES) return;
-        state.activeFileTransferId = message.id;
+        state.activeFileTransfers.set(channel._peerId, message.id);
         state.fileTransfers.set(message.id, {
           chunks: [],
           received: 0,
@@ -514,7 +528,7 @@ function setupChatChannel(channel) {
         const file = new File(transfer.chunks, transfer.name, { type: transfer.mime });
         addChatFileMessage(file, transfer.sender, false, message.id);
         state.fileTransfers.delete(message.id);
-        state.activeFileTransferId = null;
+        state.activeFileTransfers.delete(channel._peerId);
       } else if (message.type === 'chat-delete') {
         document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`)?.remove();
       } else if (message.type === 'camera-status') {
@@ -531,37 +545,40 @@ function setupChatChannel(channel) {
 function sendChatMessage() {
   const input = $('chatInput');
   const text = input?.value.trim();
-  if (!text || !state.chatChannel || state.chatChannel.readyState !== 'open') return;
+  if (!text || !openChatChannels().length) return;
   const id = crypto.randomUUID();
-  state.chatChannel.send(JSON.stringify({ type: 'chat-text', id, text, sender: state.name }));
+  broadcastChatMessage({ type: 'chat-text', id, text, sender: state.name });
   addChatMessage(text, state.name, true, id);
   input.value = '';
   input.focus();
 }
 
 async function sendChatFile(file) {
-  const channel = state.chatChannel;
-  if (!file || !channel || channel.readyState !== 'open') return;
+  const channels = openChatChannels();
+  if (!file || !channels.length) return;
   if (file.size > CHAT_FILE_MAX_BYTES) {
     showToast('Files must be 10 MB or smaller.', '⚠️');
     return;
   }
   const id = crypto.randomUUID();
   try {
-    channel.send(JSON.stringify({
-      type: 'file-start',
-      id,
-      name: file.name,
-      size: file.size,
-      mime: file.type,
-      sender: state.name
-    }));
     const data = await file.arrayBuffer();
-    for (let offset = 0; offset < data.byteLength; offset += CHAT_FILE_CHUNK_SIZE) {
-      await waitForChatBuffer(channel);
-      channel.send(data.slice(offset, offset + CHAT_FILE_CHUNK_SIZE));
-    }
-    channel.send(JSON.stringify({ type: 'file-end', id }));
+    await Promise.all(channels.map(async (channel) => {
+      const transferId = `${id}-${channel._peerId}`;
+      channel.send(JSON.stringify({
+        type: 'file-start',
+        id: transferId,
+        name: file.name,
+        size: file.size,
+        mime: file.type,
+        sender: state.name
+      }));
+      for (let offset = 0; offset < data.byteLength; offset += CHAT_FILE_CHUNK_SIZE) {
+        await waitForChatBuffer(channel);
+        channel.send(data.slice(offset, offset + CHAT_FILE_CHUNK_SIZE));
+      }
+      channel.send(JSON.stringify({ type: 'file-end', id: transferId }));
+    }));
     addChatFileMessage(file, state.name, true, id);
   } catch (error) {
     console.warn('File transfer failed:', error);
@@ -624,7 +641,7 @@ function updateCallStatus() {
   const connected = peers.filter(pc => pc.connectionState === 'connected').length;
   if (connected) setCallStatus(`Connected to ${connected} participant${connected === 1 ? '' : 's'}`, true);
   else if (state.peers.size) setCallStatus('Connecting to participants…', false);
-  else setCallStatus('Waiting for participant (1/2)', false);
+  else setCallStatus(`Waiting for participant (1/${state.chatOnly ? 10 : 2})`, false);
 }
 
 function createRemoteTile(peer) {
@@ -639,6 +656,8 @@ function createRemoteTile(peer) {
 }
 
 function removeRemotePeer(peerId) {
+  state.chatChannels.get(peerId)?.close();
+  state.chatChannels.delete(peerId);
   state.connections.get(peerId)?.close();
   state.connections.delete(peerId);
   state.peers.delete(peerId);
@@ -679,11 +698,9 @@ async function applyPendingCandidates(pc) {
 async function offerPeer(peer) {
   const pc = makePeerConnection(peer);
   pc._peerId = peer.id;
-  if (!state.chatChannel) {
-    const channel = pc.createDataChannel('speakspace-chat');
-    channel._peerId = peer.id;
-    setupChatChannel(channel);
-  }
+  const channel = pc.createDataChannel('speakspace-chat');
+  channel._peerId = peer.id;
+  setupChatChannel(channel);
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   await signal(peer, { type: 'offer', sdp: offer.sdp });
@@ -843,7 +860,7 @@ async function initRoomPage() {
     }
   }
   setCallStatus(state.chatOnly
-    ? (state.peers.size ? 'Connecting to chat participant…' : 'Waiting for chat participant (1/2)')
+    ? (state.peers.size ? 'Connecting to chat participants…' : 'Waiting for chat participants (1/10)')
     : (state.peers.size ? 'Connecting to participant…' : 'Waiting for participant (1/2)'));
   startPolling();
   showToast(`Joined room ${state.room}`, '🎉');
