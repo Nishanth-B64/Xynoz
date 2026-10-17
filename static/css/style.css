@@ -356,9 +356,14 @@ p.lede {
   flex-wrap: wrap;
 }
 
+.chat-only .app-shell {
+  max-width: 1600px;
+}
+
 .chat-only .room-grid {
   display: block;
-  max-width: 860px;
+  width: 100%;
+  max-width: 1440px;
   margin: 0 auto;
 }
 
@@ -368,14 +373,15 @@ p.lede {
 }
 
 .chat-only .chat-card {
-  min-height: min(72vh, 720px);
+  height: calc(100vh - 190px);
+  min-height: 520px;
   display: flex;
   flex-direction: column;
 }
 
 .chat-only .chat-messages {
   flex: 1;
-  min-height: 360px;
+  min-height: 0;
   max-height: none;
 }
 
@@ -1165,6 +1171,14 @@ footer {
 @media (max-width: 640px) {
   .app-shell {
     padding: 16px 16px 60px;
+  }
+  .chat-only .chat-card {
+    height: calc(100vh - 170px);
+    min-height: 420px;
+    padding: 18px;
+  }
+  .chat-only .chat-messages {
+    min-height: 0;
   }
   .video-grid {
     grid-template-columns: 1fr;
