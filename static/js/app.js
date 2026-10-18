@@ -592,6 +592,7 @@ function makePeerConnection() {
   if (state.connections.has(peer.id)) return state.connections.get(peer.id);
   const pc = new RTCPeerConnection(rtcConfig);
   pc._peerId = peer.id;
+  pc._iceRestartAttempts = 0;
   state.connections.set(peer.id, pc);
   state.peers.set(peer.id, peer);
   pc.ondatachannel = ({ channel }) => {
@@ -626,8 +627,12 @@ function makePeerConnection() {
   };
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === 'connected') {
+      pc._iceRestartAttempts = 0;
       updateCallStatus();
-    } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+    } else if (pc.connectionState === 'failed') {
+      updateCallStatus();
+      restartIceConnection(peer, pc);
+    } else if (['disconnected', 'closed'].includes(pc.connectionState)) {
       updateCallStatus();
     } else {
       updateCallStatus();
@@ -639,7 +644,13 @@ function makePeerConnection() {
 function updateCallStatus() {
   const peers = [...state.connections.values()];
   const connected = peers.filter(pc => pc.connectionState === 'connected').length;
+  const restarting = peers.some(pc => pc._iceRestartAttempts > 0 && pc.connectionState !== 'connected' && pc.connectionState !== 'closed');
+  const failed = peers.some(pc => pc.connectionState === 'failed');
+  const disconnected = peers.some(pc => pc.connectionState === 'disconnected');
   if (connected) setCallStatus(`Connected to ${connected} participant${connected === 1 ? '' : 's'}`, true);
+  else if (restarting) setCallStatus('Network path failed. Retrying connection…', false);
+  else if (failed) setCallStatus('Could not connect. Check both devices’ network connection and retry.', false);
+  else if (disconnected) setCallStatus('Connection interrupted. Reconnecting…', false);
   else if (state.peers.size) setCallStatus('Connecting to participants…', false);
   else setCallStatus(`Waiting for participant (1/${state.chatOnly ? 10 : 2})`, false);
 }
@@ -670,16 +681,18 @@ function removeRemotePeer(peerId) {
 }
 
 async function signal(peer, message) {
-  if (!state.room || !peer) return;
+  if (!state.room || !peer) return false;
   try {
     await api('/api/rooms/signal', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ room: state.room, from: state.peerId, to: peer.id, message })
     });
+    return true;
   } catch (error) {
     console.warn('Signaling request failed:', error.message);
     setCallStatus('Signaling error. Retrying…', false);
+    return false;
   }
 }
 
@@ -742,6 +755,22 @@ function shouldCreateOffer(peer) {
   return peer && state.peerId.localeCompare(peer.id) < 0;
 }
 
+async function restartIceConnection(peer, pc) {
+  if (!shouldCreateOffer(peer) || pc._iceRestartAttempts > 0 || pc.signalingState !== 'stable') return;
+
+  pc._iceRestartAttempts += 1;
+  updateCallStatus();
+  try {
+    const offer = await pc.createOffer({ iceRestart: true });
+    await pc.setLocalDescription(offer);
+    const sent = await signal(peer, { type: 'offer', sdp: offer.sdp });
+    if (!sent) setCallStatus('Could not retry connection. Check signaling and network settings.', false);
+  } catch (error) {
+    console.warn('ICE restart failed:', error);
+    setCallStatus('Connection retry failed. Check both devices’ network connection and retry.', false);
+  }
+}
+
 async function poll() {
   if (!state.room || state.pollInFlight) return;
   state.pollInFlight = true;
@@ -772,7 +801,7 @@ async function poll() {
 function startPolling() {
   clearInterval(state.polling);
   poll();
-  state.polling = setInterval(poll, 1800);
+  state.polling = setInterval(poll, 600);
 }
 
 async function initRoomPage() {

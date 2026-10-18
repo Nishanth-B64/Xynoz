@@ -51,6 +51,10 @@ def supabase_room_table(client):
     return client.table(os.getenv("SUPABASE_ROOM_TABLE", "rooms"))
 
 
+def supabase_rpc_missing(exc: Exception) -> bool:
+    return getattr(exc, "code", None) == "PGRST202"
+
+
 def webrtc_ice_servers() -> list[dict[str, object]]:
     default_servers: list[dict[str, object]] = [
         {"urls": "stun:stun.l.google.com:19302"}
@@ -254,6 +258,24 @@ def send_signal():
     signal_item = {"id": uuid.uuid4().hex, "from": sender, "to": recipient, "message": message, "created": time.time()}
     client = supabase_client()
     if client:
+        if os.getenv("SUPABASE_ROOM_TABLE", "rooms") == "rooms":
+            try:
+                accepted = client.rpc("send_room_signal", {
+                    "p_room_code": code,
+                    "p_sender": sender,
+                    "p_recipient": recipient,
+                    "p_message": message,
+                    "p_signal_id": signal_item["id"],
+                    "p_created": signal_item["created"],
+                }).execute().data
+            except Exception as exc:
+                if not supabase_rpc_missing(exc):
+                    raise
+                app.logger.warning("send_room_signal RPC is unavailable; using table-based signaling")
+            else:
+                if not accepted:
+                    return error("Join the room before signaling.", 404)
+                return jsonify({"ok": True})
         table = supabase_room_table(client)
         rows = table.select("peer_id,data").eq("room_code", code).execute().data or []
         peers = {row["peer_id"] for row in rows if row.get("data", {}).get("type") == "peer"}
@@ -278,6 +300,20 @@ def poll_room():
         return error("A room and peer ID are required.")
     client = supabase_client()
     if client:
+        if os.getenv("SUPABASE_ROOM_TABLE", "rooms") == "rooms":
+            try:
+                result = client.rpc("poll_room", {
+                    "p_room_code": code,
+                    "p_peer_id": peer_id,
+                }).execute().data
+            except Exception as exc:
+                if not supabase_rpc_missing(exc):
+                    raise
+                app.logger.warning("poll_room RPC is unavailable; using table-based polling")
+            else:
+                if result is None:
+                    return error("Room session expired. Join again.", 404)
+                return jsonify(result)
         table = supabase_room_table(client)
         rows = table.select("id,peer_id,data").eq("room_code", code).execute().data or []
         stale_ids = [

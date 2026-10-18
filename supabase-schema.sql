@@ -9,4 +9,139 @@ create table if not exists public.rooms (
 create index if not exists rooms_room_code_idx
   on public.rooms (room_code);
 
+create index if not exists rooms_room_code_peer_id_idx
+  on public.rooms (room_code, peer_id);
+
+create index if not exists rooms_active_peers_idx
+  on public.rooms (room_code, peer_id)
+  where data ->> 'type' = 'peer';
+
+create or replace function public.poll_room(p_room_code text, p_peer_id text)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  member_id bigint;
+  now_epoch double precision := extract(epoch from clock_timestamp());
+  received_signals jsonb;
+  room_peers jsonb;
+begin
+  delete from public.rooms as stale
+  where stale.room_code = p_room_code
+    and stale.data ->> 'type' = 'peer'
+    and case
+      when coalesce(stale.data ->> 'seen', '') ~ '^[0-9]+([.][0-9]+)?$'
+        then (stale.data ->> 'seen')::double precision
+      else 0
+    end < now_epoch - 900;
+
+  select peer.id
+    into member_id
+  from public.rooms as peer
+  where peer.room_code = p_room_code
+    and peer.peer_id = p_peer_id
+    and peer.data ->> 'type' = 'peer'
+  limit 1;
+
+  if member_id is null then
+    return null;
+  end if;
+
+  update public.rooms
+  set data = jsonb_set(data, '{seen}', to_jsonb(now_epoch), true)
+  where id = member_id
+    and case
+      when coalesce(data ->> 'seen', '') ~ '^[0-9]+([.][0-9]+)?$'
+        then (data ->> 'seen')::double precision
+      else 0
+    end <= now_epoch - 30;
+
+  with deleted_signals as (
+    delete from public.rooms as signal
+    where signal.room_code = p_room_code
+      and signal.peer_id = p_peer_id
+      and signal.data ->> 'type' = 'signal'
+    returning signal.id, signal.data
+  )
+  select coalesce(
+    jsonb_agg(
+      deleted_signals.data || jsonb_build_object(
+        'id', coalesce(deleted_signals.data ->> 'id', deleted_signals.id::text)
+      )
+    ),
+    '[]'::jsonb
+  )
+  into received_signals
+  from deleted_signals;
+
+  select coalesce(
+    jsonb_agg(jsonb_build_object(
+      'id', peer.peer_id,
+      'name', coalesce(peer.data ->> 'name', 'Guest')
+    )),
+    '[]'::jsonb
+  )
+  into room_peers
+  from public.rooms as peer
+  where peer.room_code = p_room_code
+    and peer.data ->> 'type' = 'peer'
+    and peer.peer_id <> p_peer_id;
+
+  return jsonb_build_object('signals', received_signals, 'peers', room_peers);
+end;
+$$;
+
+create or replace function public.send_room_signal(
+  p_room_code text,
+  p_sender text,
+  p_recipient text,
+  p_message jsonb,
+  p_signal_id text,
+  p_created double precision
+)
+returns boolean
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if not exists (
+    select 1
+    from public.rooms as peer
+    where peer.room_code = p_room_code
+      and peer.peer_id in (p_sender, p_recipient)
+      and peer.data ->> 'type' = 'peer'
+    group by peer.room_code
+    having count(distinct peer.peer_id) = 2
+  ) then
+    return false;
+  end if;
+
+  insert into public.rooms (room_code, peer_id, data)
+  values (
+    p_room_code,
+    p_recipient,
+    jsonb_build_object(
+      'type', 'signal',
+      'id', p_signal_id,
+      'from', p_sender,
+      'to', p_recipient,
+      'message', p_message,
+      'created', p_created
+    )
+  );
+
+  return true;
+end;
+$$;
+
+revoke all on function public.poll_room(text, text) from public;
+revoke all on function public.send_room_signal(text, text, text, jsonb, text, double precision) from public;
+grant execute on function public.poll_room(text, text) to service_role;
+grant execute on function public.send_room_signal(text, text, text, jsonb, text, double precision) to service_role;
+
 alter table public.rooms enable row level security;
+
+notify pgrst, 'reload schema';
