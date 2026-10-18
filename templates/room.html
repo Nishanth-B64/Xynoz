@@ -108,7 +108,8 @@
             <form id="chatForm" class="chat-form">
               <button id="chatAttachBtn" class="btn-quiet chat-attach-btn" type="button" title="Attach a file" disabled>📎</button>
               <input id="chatFileInput" type="file" hidden>
-              <input id="chatInput" class="input-field" maxlength="300" placeholder="Write a message..." disabled>
+              <button id="chatCodeBtn" class="btn-quiet chat-code-btn" type="button" title="Send a formatted code block" aria-label="Toggle code mode" aria-pressed="false" disabled>&lt;/&gt;</button>
+              <textarea id="chatInput" class="input-field" rows="1" maxlength="12000" placeholder="Write a message..." disabled></textarea>
               <button id="chatSendBtn" class="btn-primary" type="submit" disabled>Send</button>
             </form>
           </div>

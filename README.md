@@ -29,4 +29,4 @@ The browser captures microphone audio and sends WAV audio to Python `SpeechRecog
 
 - `POST /api/transcribe` accepts a WAV upload in `audio` and returns its transcript via Python `SpeechRecognition`.
 - `POST /api/grammar` accepts `{"transcript":"..."}` and returns correction JSON generated server-side.
-- `/api/rooms/*` relays offer, answer, and ICE-candidate messages for room participants. Polling runs every 600 ms; Supabase-backed rooms use database RPCs to fetch presence/signals and to validate/insert each signal in one request.
+- `/api/rooms/*` relays offer, answer, and ICE-candidate messages for room participants. Polling runs every 600 ms; Supabase-backed rooms use database RPCs to fetch presence/signals and to validate/insert each signal in one request. In chat, including video practice rooms, use the `</>` button to compose multiline code blocks; Enter inserts a newline and Ctrl+Enter sends the code. Video calls prewarm ICE candidates and use bundled media tracks; chat-only rooms do not enable the video-specific ICE pool.

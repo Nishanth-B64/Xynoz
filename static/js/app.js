@@ -294,7 +294,8 @@ const state = {
   pendingCandidates: new Map(),
   topic: 0,
   customTopic: '',
-  chatOnly: false
+  chatOnly: false,
+  codeMode: false
 };
 
 const rtcConfig = {
@@ -343,6 +344,15 @@ function sendCameraStatus(cameraOn) {
   broadcastChatMessage({ type: 'camera-status', cameraOn });
 }
 
+function addLocalTracksToPeer(pc) {
+  if (!state.stream) return;
+  for (const track of state.stream.getTracks()) {
+    if (!pc.getSenders().some(sender => sender.track === track)) {
+      pc.addTrack(track, state.stream);
+    }
+  }
+}
+
 async function getMedia() {
   if (state.stream) return state.stream;
   if (!navigator.mediaDevices?.getUserMedia) {
@@ -370,6 +380,7 @@ async function getMedia() {
   const tracks = streams.flatMap(stream => stream.getTracks());
   if (!tracks.length) throw errors[0] || new Error('Could not access camera or microphone.');
   state.stream = new MediaStream(tracks);
+  for (const pc of state.connections.values()) addLocalTracksToPeer(pc);
   if ($('localVideo')) {
     $('localVideo').srcObject = state.stream;
     $('localVideo').style.display = 'block';
@@ -385,18 +396,18 @@ function clearChatEmptyState() {
   $('chatMessages')?.querySelector('.chat-empty')?.remove();
 }
 
-function createChatActions(message, text, own) {
+function createChatActions(message, text, own, isCode = false) {
   const actions = document.createElement('div');
   actions.className = 'chat-message-actions';
   const copyButton = document.createElement('button');
   copyButton.type = 'button';
   copyButton.className = 'chat-action-btn';
-  copyButton.textContent = 'Copy';
-  copyButton.title = 'Copy message';
+  copyButton.textContent = isCode ? 'Copy code' : 'Copy';
+  copyButton.title = isCode ? 'Copy code' : 'Copy message';
   copyButton.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(text);
-      showToast('Message copied.', '📋');
+      showToast(isCode ? 'Code copied.' : 'Message copied.', '📋');
     } catch (error) {
       showToast('Could not copy message.', '⚠️');
     }
@@ -417,7 +428,7 @@ function createChatActions(message, text, own) {
   return actions;
 }
 
-function addChatMessage(text, sender, own = false, messageId = crypto.randomUUID()) {
+function addChatMessage(text, sender, own = false, messageId = crypto.randomUUID(), isCode = false) {
   const messages = $('chatMessages');
   if (!messages) return;
   clearChatEmptyState();
@@ -426,9 +437,18 @@ function addChatMessage(text, sender, own = false, messageId = crypto.randomUUID
   message.dataset.messageId = messageId;
   const author = document.createElement('strong');
   author.textContent = own ? 'You' : sender;
-  const content = document.createElement('span');
-  content.textContent = text;
-  message.append(author, content, createChatActions(message, text, own));
+  let content;
+  if (isCode) {
+    content = document.createElement('pre');
+    content.className = 'chat-code-block';
+    const code = document.createElement('code');
+    code.textContent = text;
+    content.appendChild(code);
+  } else {
+    content = document.createElement('span');
+    content.textContent = text;
+  }
+  message.append(author, content, createChatActions(message, text, own, isCode));
   messages.appendChild(message);
   messages.scrollTop = messages.scrollHeight;
 }
@@ -462,6 +482,7 @@ function setChatControlsEnabled(enabled) {
   if ($('chatInput')) $('chatInput').disabled = !enabled;
   if ($('chatSendBtn')) $('chatSendBtn').disabled = !enabled;
   if ($('chatAttachBtn')) $('chatAttachBtn').disabled = !enabled;
+  if ($('chatCodeBtn')) $('chatCodeBtn').disabled = !enabled;
 }
 
 function openChatChannels() {
@@ -533,6 +554,8 @@ function setupChatChannel(channel) {
         document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`)?.remove();
       } else if (message.type === 'camera-status') {
         setRemoteCameraState(channel._peerId, message.cameraOn === true);
+      } else if (message.type === 'chat-code' && typeof message.code === 'string') {
+        addChatMessage(message.code, message.sender || 'Partner', false, message.id, true);
       } else {
         addChatMessage(message.text, message.sender || 'Partner', false, message.id);
       }
@@ -544,13 +567,33 @@ function setupChatChannel(channel) {
 
 function sendChatMessage() {
   const input = $('chatInput');
-  const text = input?.value.trim();
-  if (!text || !openChatChannels().length) return;
+  const value = input?.value || '';
+  if (!value.trim() || !openChatChannels().length) return;
+  const text = state.codeMode ? value : value.trim();
   const id = crypto.randomUUID();
-  broadcastChatMessage({ type: 'chat-text', id, text, sender: state.name });
-  addChatMessage(text, state.name, true, id);
+  if (state.codeMode) {
+    broadcastChatMessage({ type: 'chat-code', id, code: text, sender: state.name });
+  } else {
+    broadcastChatMessage({ type: 'chat-text', id, text, sender: state.name });
+  }
+  addChatMessage(text, state.name, true, id, state.codeMode);
   input.value = '';
   input.focus();
+}
+
+function setChatCodeMode(enabled) {
+  state.codeMode = enabled;
+  const button = $('chatCodeBtn');
+  const input = $('chatInput');
+  if (button) {
+    button.classList.toggle('active', enabled);
+    button.setAttribute('aria-pressed', String(enabled));
+    button.title = enabled ? 'Turn off code mode' : 'Send a formatted code block';
+  }
+  if (input) {
+    input.placeholder = enabled ? 'Paste or write code...' : 'Write a message...';
+    input.maxLength = enabled ? 12000 : 300;
+  }
 }
 
 async function sendChatFile(file) {
@@ -590,7 +633,10 @@ function makePeerConnection() {
   const peer = arguments[0];
   if (!peer) return null;
   if (state.connections.has(peer.id)) return state.connections.get(peer.id);
-  const pc = new RTCPeerConnection(rtcConfig);
+  const peerConfig = state.chatOnly
+    ? rtcConfig
+    : { ...rtcConfig, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 };
+  const pc = new RTCPeerConnection(peerConfig);
   pc._peerId = peer.id;
   pc._iceRestartAttempts = 0;
   state.connections.set(peer.id, pc);
@@ -599,9 +645,7 @@ function makePeerConnection() {
     channel._peerId = peer.id;
     setupChatChannel(channel);
   };
-  if (state.stream) {
-    state.stream.getTracks().forEach(track => pc.addTrack(track, state.stream));
-  }
+  addLocalTracksToPeer(pc);
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
       signal(peer, { type: 'candidate', candidate: candidate.toJSON() });
@@ -865,6 +909,7 @@ async function initRoomPage() {
     data.peers.forEach(peer => {
       state.peers.set(peer.id, peer);
       createRemoteTile(peer);
+      if (!state.chatOnly) makePeerConnection(peer);
     });
     if (state.chatOnly) setCallStatus('P2P chat room · no camera or microphone');
   } catch (err) {
@@ -904,6 +949,16 @@ async function initRoomPage() {
   if ($('chatForm')) $('chatForm').addEventListener('submit', (event) => {
     event.preventDefault();
     sendChatMessage();
+  });
+  if ($('chatCodeBtn')) $('chatCodeBtn').addEventListener('click', () => {
+    setChatCodeMode(!state.codeMode);
+    $('chatInput')?.focus();
+  });
+  if ($('chatInput')) $('chatInput').addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    if (state.codeMode && !event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    $('chatForm')?.requestSubmit();
   });
   if ($('chatAttachBtn')) $('chatAttachBtn').addEventListener('click', () => $('chatFileInput')?.click());
   if ($('chatFileInput')) $('chatFileInput').addEventListener('change', async (event) => {

@@ -877,6 +877,24 @@ p.lede {
   font-size: 11px;
 }
 
+.chat-code-block {
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: rgba(8, 13, 20, 0.65);
+  color: #e2e8f0;
+  text-align: left;
+  white-space: pre;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.chat-code-block code {
+  font: inherit;
+}
+
 .chat-message-actions {
   display: flex;
   gap: 6px;
@@ -918,6 +936,24 @@ p.lede {
   padding: 8px;
   justify-content: center;
   font-size: 17px;
+}
+
+.chat-code-btn {
+  flex: 0 0 auto;
+  padding: 8px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.chat-code-btn.active {
+  border-color: var(--emerald-400);
+  color: var(--emerald-400);
+  background: var(--emerald-surface);
+}
+
+.chat-form textarea.input-field {
+  min-height: 40px;
+  max-height: 120px;
+  resize: vertical;
 }
 
 .chat-file-link {
