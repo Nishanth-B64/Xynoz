@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ "P2P Chat" if room_mode == "chat" else "Practice Room" }} {{ room_code }} · Xynoz</title>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/logo.png') }}">
+    <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
   </head>
   <body class="{{ 'chat-only' if room_mode == 'chat' else '' }}">
@@ -29,9 +30,10 @@
             <span id="callStatusText">Connecting…</span>
           </div>
 
-          <button id="leaveBtn" class="btn-quiet" style="color: #f87171; border-color: rgba(244, 63, 94, 0.25);">
+          <button id="leaveBtn" class="btn-quiet" style="color: var(--rose-500); border-color: var(--rose-surface);">
             Leave Room ⎋
           </button>
+          <button type="button" class="theme-toggle">☾ Dark theme</button>
         </div>
       </header>
 

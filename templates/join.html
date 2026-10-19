@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Join a Practice Room · Xynoz</title>
     <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/logo.png') }}">
+    <script src="{{ url_for('static', filename='js/theme.js') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
   </head>
   <body>
@@ -18,17 +19,12 @@
           <a class="nav-link" href="/">Home</a>
           <a class="nav-link" href="/create">Create Room</a>
           <a class="nav-link active" href="/join">Join Room</a>
+          <button type="button" class="theme-toggle">☾ Dark theme</button>
         </nav>
       </header>
 
       <main>
         <div class="page-container-centered">
-          <div class="page-header-block">
-            <div class="eyebrow eyebrow-pill">ENTER SESSION</div>
-            <h1>Join a Practice Room</h1>
-            <p class="lede">Enter your name and the room code provided by the host. Video or chat-only mode is detected automatically.</p>
-          </div>
-
           <div class="glass-card">
             <form id="joinRoomForm" onsubmit="event.preventDefault(); proceedToRoom();">
               <div class="form-group">
@@ -45,7 +41,7 @@
               <!-- Device Preview & Readiness Check -->
               <div class="device-preview-card">
                 <div class="device-preview-heading">
-                  <span style="font-size: 13px; font-weight: 600; color: #fff;">Camera & Mic Preview</span>
+                  <span style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Camera & Mic Preview</span>
                   <div style="display: flex; gap: 6px;">
                     <button type="button" id="testCameraBtn" class="btn-quiet" style="font-size: 12px; padding: 4px 8px;">Test Camera</button>
                     <button type="button" id="testMicBtn" class="btn-quiet" style="font-size: 12px; padding: 4px 8px;">Test Mic</button>
@@ -54,10 +50,6 @@
 
                 <div class="preview-video-container">
                   <video id="previewVideo" autoplay playsinline muted></video>
-                  <div id="previewFallback" class="preview-fallback">
-                    <span>📹</span>
-                    <span>Test the camera and microphone separately</span>
-                  </div>
                 </div>
 
                 <div class="preview-controls">
@@ -72,8 +64,7 @@
               </div>
 
               <button type="submit" id="submitJoinBtn" class="btn-primary" style="width: 100%; padding: 15px;">
-                <span>🔑 Enter Practice Room</span>
-                <span style="font-size: 18px;">→</span>
+                <span>Enter Practice Room</span>
               </button>
             </form>
 
