@@ -285,6 +285,8 @@ const state = {
   stream: null,
   polling: null,
   pollInFlight: false,
+  pollError: '',
+  signalError: '',
   recording: false,
   recorderNode: null,
   audioContext: null,
@@ -646,6 +648,22 @@ function makePeerConnection() {
     setupChatChannel(channel);
   };
   addLocalTracksToPeer(pc);
+  pc.onnegotiationneeded = async () => {
+    if (!pc._initialOfferSent || !shouldCreateOffer(peer) || pc.signalingState !== 'stable' || pc._offerInProgress) return;
+    pc._offerInProgress = true;
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      if (!await signal(peer, { type: 'offer', sdp: offer.sdp })) {
+        await pc.setLocalDescription({ type: 'rollback' });
+      }
+    } catch (error) {
+      console.warn('Media renegotiation failed:', error);
+      setCallStatus('Could not add camera or microphone to the call. Please retry.', false);
+    } finally {
+      pc._offerInProgress = false;
+    }
+  };
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
       signal(peer, { type: 'candidate', candidate: candidate.toJSON() });
@@ -692,6 +710,8 @@ function updateCallStatus() {
   const failed = peers.some(pc => pc.connectionState === 'failed');
   const disconnected = peers.some(pc => pc.connectionState === 'disconnected');
   if (connected) setCallStatus(`Connected to ${connected} participant${connected === 1 ? '' : 's'}`, true);
+  else if (state.signalError) setCallStatus(`Signaling error: ${state.signalError}`, false);
+  else if (state.pollError) setCallStatus(`Room connection error: ${state.pollError}`, false);
   else if (restarting) setCallStatus('Network path failed. Retrying connection…', false);
   else if (failed) setCallStatus('Could not connect. Check both devices’ network connection and retry.', false);
   else if (disconnected) setCallStatus('Connection interrupted. Reconnecting…', false);
@@ -732,10 +752,13 @@ async function signal(peer, message) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ room: state.room, from: state.peerId, to: peer.id, message })
     });
+    state.signalError = '';
+    updateCallStatus();
     return true;
   } catch (error) {
+    state.signalError = error.message;
     console.warn('Signaling request failed:', error.message);
-    setCallStatus('Signaling error. Retrying…', false);
+    updateCallStatus();
     return false;
   }
 }
@@ -755,13 +778,27 @@ async function applyPendingCandidates(pc) {
 async function offerPeer(peer) {
   const pc = makePeerConnection(peer);
   pc._peerId = peer.id;
-  const channel = pc.createDataChannel('speakspace-chat');
-  channel._peerId = peer.id;
-  setupChatChannel(channel);
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  await signal(peer, { type: 'offer', sdp: offer.sdp });
-  updateCallStatus();
+  if (!pc._chatDataChannelCreated) {
+    const channel = pc.createDataChannel('speakspace-chat');
+    channel._peerId = peer.id;
+    setupChatChannel(channel);
+    pc._chatDataChannelCreated = true;
+  }
+  if (pc._offerInProgress || pc.signalingState !== 'stable') return;
+  pc._offerInProgress = true;
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const sent = await signal(peer, { type: 'offer', sdp: offer.sdp });
+    if (sent) {
+      pc._initialOfferSent = true;
+    } else {
+      await pc.setLocalDescription({ type: 'rollback' });
+    }
+    updateCallStatus();
+  } finally {
+    pc._offerInProgress = false;
+  }
 }
 
 async function handleSignal(packet) {
@@ -827,16 +864,21 @@ async function poll() {
     for (const peer of data.peers) {
       state.peers.set(peer.id, peer);
       createRemoteTile(peer);
-      if (!state.connections.has(peer.id)) {
-        makePeerConnection(peer)._peerId = peer.id;
-        if (shouldCreateOffer(peer)) await offerPeer(peer);
+      const pc = makePeerConnection(peer);
+      pc._peerId = peer.id;
+      if (shouldCreateOffer(peer) && !pc._initialOfferSent && pc.signalingState === 'stable') {
+        await offerPeer(peer);
       }
     }
     for (const packet of data.signals) {
       await handleSignal(packet);
     }
+    state.pollError = '';
+    updateCallStatus();
   } catch (err) {
     console.warn('Poll error:', err.message);
+    state.pollError = err.message;
+    updateCallStatus();
   } finally {
     state.pollInFlight = false;
   }
@@ -912,9 +954,11 @@ async function initRoomPage() {
       if (!state.chatOnly) makePeerConnection(peer);
     });
     if (state.chatOnly) setCallStatus('P2P chat room · no camera or microphone');
+    startPolling();
   } catch (err) {
     setCallStatus(`Error: ${err.message}`);
     showToast(err.message, '⚠️');
+    return;
   }
 
   if ($('recordBtn')) $('recordBtn').addEventListener('click', startBrowserRecording);
@@ -936,7 +980,6 @@ async function initRoomPage() {
   setCallStatus(state.chatOnly
     ? (state.peers.size ? 'Connecting to chat participants…' : 'Waiting for chat participants (1/10)')
     : (state.peers.size ? 'Connecting to participant…' : 'Waiting for participant (1/2)'));
-  startPolling();
   showToast(`Joined room ${state.room}`, '🎉');
 
   // Camera & Mic toggles
