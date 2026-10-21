@@ -6,7 +6,7 @@ function setTheme(theme) {
   localStorage.setItem(THEME_STORAGE_KEY, isDark ? 'dark' : 'light');
 
   document.querySelectorAll('.theme-toggle').forEach((button) => {
-    button.textContent = isDark ? '☀ Light theme' : '☾ Dark theme';
+    button.textContent = isDark ? '☀️' : '🌙';
     button.setAttribute('aria-label', isDark ? 'Switch to light theme' : 'Switch to dark theme');
     button.setAttribute('aria-pressed', String(isDark));
   });
