@@ -467,6 +467,50 @@ p.lede {
   letter-spacing: -1.8px;
 }
 
+.home-page h1 .xynoz-glow {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    #c026d3,
+    #4f46e5,
+    #0284c7,
+    #059669,
+    #d97706,
+    #e11d48,
+    #c026d3
+  );
+  background-size: 300% 100%;
+  background-position: 0% 50%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 10px rgba(99, 102, 241, 0.32));
+  animation: xynoz-color-glow 6s ease-in-out infinite;
+}
+
+:root[data-theme="dark"] .home-page h1 .xynoz-glow {
+  background-image: linear-gradient(
+    90deg,
+    #fb7185,
+    #c084fc,
+    #38bdf8,
+    #34d399,
+    #facc15,
+    #fb7185
+  );
+  filter: drop-shadow(0 0 12px rgba(192, 132, 252, 0.46));
+}
+
+@keyframes xynoz-color-glow {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
 .home-page .hero-actions {
   display: grid;
   grid-template-columns: minmax(0, 440px);
@@ -1468,6 +1512,11 @@ footer {
   :root[data-theme="dark"] .home-page::before,
   :root[data-theme="dark"] .home-page::after {
     animation: none;
+  }
+
+  .home-page h1 .xynoz-glow {
+    animation: none;
+    background-position: 50% 50%;
   }
 }
 
