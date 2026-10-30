@@ -310,6 +310,33 @@ p.lede {
   outline-offset: 3px;
 }
 
+.maintenance-button:disabled {
+  gap: 12px;
+  background: var(--amber-surface);
+  border: 1px solid var(--amber-500);
+  color: var(--amber-500);
+  cursor: not-allowed;
+  opacity: 1;
+  box-shadow: none;
+}
+
+.maintenance-button .maintenance-badge {
+  padding: 3px 8px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.maintenance-note {
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+}
+
 .btn-quiet {
   padding: 8px 14px;
   background: var(--bg-surface-elevated);

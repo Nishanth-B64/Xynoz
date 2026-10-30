@@ -238,6 +238,7 @@ function launchRoom() {
   const name = $('hostName').value.trim() || 'Host';
   const code = $('roomCode').value.trim().toUpperCase();
   const mode = $('roomMode')?.value === 'chat' ? 'chat' : 'video';
+  if (mode !== 'chat' && window.VIDEO_ROOMS_ENABLED !== true) return;
   if (code.length < 3) return alert('Room code must be at least 3 characters.');
   localStorage.setItem(DISPLAY_NAME_STORAGE_KEY, name);
   cleanupDevicePreview();

@@ -23,6 +23,8 @@ Run [supabase-schema.sql](supabase-schema.sql) in the Supabase SQL Editor (and r
 - `SUPABASE_JWT_SECRET`: the Supabase project's JWT signing secret. Server-side only; used to mint one-hour, room-scoped Realtime tokens.
 - `SUPABASE_ROOM_TABLE`: `rooms`.
 - `SUPABASE_STORAGE_BUCKET`: `chat-files` (created as a private bucket by the SQL schema).
+- `VIDEO_ROOMS_ENABLED`: defaults to `false`, keeping video-room creation in maintenance mode while P2P chat and joining rooms remain available. Set to `true` after configuring a TURN server to re-enable video-room creation.
+- `WEBRTC_ICE_SERVERS`: optional JSON array of ICE server objects; configure your TURN server here before enabling video rooms.
 - `SOCKETIO_CORS_ORIGINS`: optional comma-separated allowed origins for cross-origin Socket.IO clients. Same-origin is the default.
 
 The Supabase JWT secret is available in the project's API/JWT settings. Keep both it and the service-role key private. After setting the variables and running the SQL, redeploy to Vercel. File attachments (up to 10 MB) are uploaded directly to the private Storage bucket using short-lived signed upload tokens; downloads use short-lived signed URLs after the server verifies room membership.

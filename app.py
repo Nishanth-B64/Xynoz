@@ -42,6 +42,12 @@ socketio = SocketIO(
 
 MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 FALLBACK_MODEL_NAME = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
+VIDEO_ROOMS_ENABLED = os.getenv("VIDEO_ROOMS_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 SIGNAL_TTL_SECONDS = 15 * 60
 MAX_VIDEO_ROOM_MEMBERS = 2
 MAX_CHAT_ROOM_MEMBERS = 10
@@ -703,13 +709,22 @@ def disconnect_signaling_peer():
 
 @app.get("/")
 def index():
-    return render_template("index.html", topics=TOPICS)
+    return render_template(
+        "index.html",
+        topics=TOPICS,
+        video_rooms_enabled=VIDEO_ROOMS_ENABLED,
+    )
 
 
 @app.get("/create")
 def create_room_page():
     mode = "chat" if request.args.get("mode") == "chat" else "video"
-    return render_template("create.html", topics=TOPICS, room_mode=mode)
+    return render_template(
+        "create.html",
+        topics=TOPICS,
+        room_mode=mode,
+        video_rooms_enabled=VIDEO_ROOMS_ENABLED,
+    )
 
 
 @app.get("/join")

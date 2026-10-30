@@ -27,9 +27,16 @@
             <div class="eyebrow eyebrow-pill">✦ Live Peer Practice & AI Coach</div>
             <h1>WELCOME TO <span class="xynoz-glow">XYNOZ</span><br><span class="text-gradient">Speak freely. Connect naturally.</span></h1>
             <div class="hero-actions">
+              {% if video_rooms_enabled %}
               <a href="/create" class="btn-primary">
                 <span>Create a Practice Room</span>
               </a>
+              {% else %}
+              <button type="button" class="btn-primary maintenance-button" disabled aria-describedby="videoRoomMaintenanceNote">
+                <span>Create a Practice Room</span>
+                <span class="maintenance-badge">Under Maintenance</span>
+              </button>
+              {% endif %}
               <a href="/join" class="btn-secondary">
                 <span>Join with Room Code</span>
               </a>
@@ -37,6 +44,9 @@
                 <span>Create a P2P Chat Room</span>
               </a>
             </div>
+            {% if not video_rooms_enabled %}
+            <p id="videoRoomMaintenanceNote" class="maintenance-note">Video rooms are temporarily unavailable. P2P chat and joining rooms are still available.</p>
+            {% endif %}
           </div>
 
         </section>

@@ -87,9 +87,15 @@
               </div>
               {% endif %}
 
-              <button type="submit" id="submitLaunchBtn" class="btn-primary" style="width: 100%; padding: 15px;">
-                <span>{{ "Launch P2P Chat Room" if room_mode == "chat" else "Launch Practice Room" }}</span>
+              <button type="submit" id="submitLaunchBtn" class="btn-primary{% if room_mode != 'chat' and not video_rooms_enabled %} maintenance-button{% endif %}" style="width: 100%; padding: 15px;"{% if room_mode != "chat" and not video_rooms_enabled %} disabled aria-describedby="videoRoomMaintenanceNote"{% endif %}>
+                <span>{{ "Launch P2P Chat Room" if room_mode == "chat" else "Create a Practice Room" }}</span>
+                {% if room_mode != "chat" and not video_rooms_enabled %}
+                <span class="maintenance-badge">Under Maintenance</span>
+                {% endif %}
               </button>
+              {% if room_mode != "chat" and not video_rooms_enabled %}
+              <p id="videoRoomMaintenanceNote" class="maintenance-note">Video rooms are temporarily unavailable. P2P chat and joining rooms are still available.</p>
+              {% endif %}
             </form>
 
             <div style="margin-top: 24px; text-align: center;">
@@ -107,6 +113,7 @@
 
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
     <script>
+      window.VIDEO_ROOMS_ENABLED = {{ 'true' if video_rooms_enabled else 'false' }};
       document.addEventListener('DOMContentLoaded', () => {
         initCreatePage();
       });
