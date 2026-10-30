@@ -16,6 +16,35 @@ create index if not exists rooms_active_peers_idx
   on public.rooms (room_code, peer_id)
   where data ->> 'type' = 'peer';
 
+create table if not exists public.room_messages (
+  event_id text primary key,
+  room_code text not null,
+  sender_id text not null,
+  payload jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists room_messages_room_created_idx
+  on public.room_messages (room_code, created_at desc);
+
+alter table public.room_messages enable row level security;
+revoke all on public.room_messages from anon, authenticated;
+grant all on public.room_messages to service_role;
+
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('chat-files', 'chat-files', false, 10485760)
+on conflict (id) do update
+set public = false, file_size_limit = 10485760;
+
+drop policy if exists "Room tokens can receive room broadcasts" on realtime.messages;
+create policy "Room tokens can receive room broadcasts"
+  on realtime.messages
+  for select
+  to authenticated
+  using (
+    realtime.topic() = 'room:' || (select auth.jwt() ->> 'room_code')
+  );
+
 create or replace function public.poll_room(p_room_code text, p_peer_id text)
 returns jsonb
 language plpgsql

@@ -1136,7 +1136,7 @@ p.lede {
 .chat-message.own {
   align-self: flex-end;
   background: var(--emerald-surface);
-  color: #115e59;
+  color: var(--emerald-400);
   text-align: right;
 }
 

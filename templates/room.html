@@ -205,7 +205,17 @@
       window.ROOM_CODE = "{{ room_code }}";
       window.PRACTICE_TOPICS = {{ topics|tojson }};
       window.RTC_ICE_SERVERS = {{ ice_servers|tojson }};
+      window.SOCKET_SIGNALING_ENABLED = {{ 'true' if socket_signaling_enabled else 'false' }};
+      window.SUPABASE_CONFIG = {{ {
+        "url": supabase_url,
+        "anonKey": supabase_anon_key,
+        "storageBucket": supabase_storage_bucket
+      }|tojson }};
     </script>
+    {% if socket_signaling_enabled %}
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.91.0/dist/umd/supabase.min.js"></script>
+    {% endif %}
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
     <script>
       document.addEventListener('DOMContentLoaded', () => {

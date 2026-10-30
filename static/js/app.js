@@ -3,6 +3,7 @@
 const $ = (id) => document.getElementById(id);
 const DISPLAY_NAME_STORAGE_KEY = 'xynoz_name';
 const LEGACY_DISPLAY_NAME_STORAGE_KEY = 'speakspace_name';
+const ROOM_PEER_STORAGE_PREFIX = 'xynoz_room_peer_';
 
 function getSavedDisplayName() {
   const savedName = localStorage.getItem(DISPLAY_NAME_STORAGE_KEY);
@@ -10,6 +11,16 @@ function getSavedDisplayName() {
   const legacyName = localStorage.getItem(LEGACY_DISPLAY_NAME_STORAGE_KEY) || '';
   if (legacyName) localStorage.setItem(DISPLAY_NAME_STORAGE_KEY, legacyName);
   return legacyName;
+}
+
+function getRoomPeerId(room) {
+  const key = `${ROOM_PEER_STORAGE_PREFIX}${room}`;
+  let peerId = sessionStorage.getItem(key);
+  if (!peerId) {
+    peerId = crypto.randomUUID();
+    sessionStorage.setItem(key, peerId);
+  }
+  return peerId;
 }
 
 // Toast notification helper
@@ -40,8 +51,21 @@ function generateRandomRoomCode() {
 // API helper
 async function api(url, options = {}) {
   const res = await fetch(url, options);
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || 'Request failed.');
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  if (!res.ok) {
+    const fallback = res.status >= 500
+      ? `Server error (${res.status}). Check the room service configuration and server logs.`
+      : `Request failed (HTTP ${res.status}).`;
+    throw new Error(body?.error || fallback);
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new Error(`Invalid server response (HTTP ${res.status}).`);
+  }
   return body;
 }
 
@@ -273,12 +297,11 @@ async function proceedToRoom() {
 // 3. Live Practice Room Flow (room.html)
 // --------------------------------------------------------------------------
 const state = {
-  peerId: crypto.randomUUID(),
+  peerId: '',
   room: '',
   name: 'You',
   partner: null,
   pc: null,
-  chatChannels: new Map(),
   connections: new Map(),
   peers: new Map(),
   screenTrack: null,
@@ -287,12 +310,19 @@ const state = {
   pollInFlight: false,
   pollError: '',
   signalError: '',
+  socket: null,
+  socketReady: false,
+  roomJoined: false,
+  realtimeReady: false,
+  handledSignals: new Set(),
+  roomEventIds: new Set(),
+  supabase: null,
+  roomChannel: null,
+  realtimeTokenRefresh: null,
   recording: false,
   recorderNode: null,
   audioContext: null,
   audioChunks: [],
-  fileTransfers: new Map(),
-  activeFileTransfers: new Map(),
   pendingCandidates: new Map(),
   topic: 0,
   customTopic: '',
@@ -306,7 +336,6 @@ const rtcConfig = {
     : [{ urls: 'stun:stun.l.google.com:19302' }]
 };
 const CHAT_FILE_MAX_BYTES = 10 * 1024 * 1024;
-const CHAT_FILE_CHUNK_SIZE = 16 * 1024;
 
 function setCallStatus(text, connected = false) {
   const statusEl = $('callStatus');
@@ -343,7 +372,7 @@ function setRemoteCameraState(peerId, cameraOn) {
 }
 
 function sendCameraStatus(cameraOn) {
-  broadcastChatMessage({ type: 'camera-status', cameraOn });
+  broadcastChatMessage({ type: 'camera-status', id: crypto.randomUUID(), cameraOn });
 }
 
 function addLocalTracksToPeer(pc) {
@@ -421,9 +450,13 @@ function createChatActions(message, text, own, isCode = false) {
     deleteButton.className = 'chat-action-btn chat-delete-btn';
     deleteButton.textContent = 'Delete';
     deleteButton.title = 'Delete message';
-    deleteButton.addEventListener('click', () => {
-      broadcastChatMessage({ type: 'chat-delete', id: message.dataset.messageId });
-      message.remove();
+    deleteButton.addEventListener('click', async () => {
+      const deleted = await broadcastChatMessage({
+        type: 'chat-delete',
+        id: crypto.randomUUID(),
+        targetId: message.dataset.messageId
+      });
+      if (deleted) message.remove();
     });
     actions.appendChild(deleteButton);
   }
@@ -472,7 +505,7 @@ function addChatFileMessage(file, sender, own = false, messageId = crypto.random
   author.textContent = own ? 'You' : sender;
   const link = document.createElement('a');
   link.className = 'chat-file-link';
-  link.href = URL.createObjectURL(file);
+  link.href = `/api/rooms/files/download?room=${encodeURIComponent(state.room)}&peerId=${encodeURIComponent(state.peerId)}&path=${encodeURIComponent(file.path)}`;
   link.download = file.name;
   link.textContent = `📎 ${file.name} (${formatFileSize(file.size)})`;
   message.append(author, link, createChatActions(message, file.name, own));
@@ -483,104 +516,165 @@ function addChatFileMessage(file, sender, own = false, messageId = crypto.random
 function setChatControlsEnabled(enabled) {
   if ($('chatInput')) $('chatInput').disabled = !enabled;
   if ($('chatSendBtn')) $('chatSendBtn').disabled = !enabled;
-  if ($('chatAttachBtn')) $('chatAttachBtn').disabled = !enabled;
+  if ($('chatAttachBtn')) $('chatAttachBtn').disabled = !enabled || !state.supabase;
   if ($('chatCodeBtn')) $('chatCodeBtn').disabled = !enabled;
 }
 
-function openChatChannels() {
-  return [...state.chatChannels.values()].filter(channel => channel.readyState === 'open');
+async function broadcastChatMessage(message) {
+  if (state.socket?.connected && state.socketReady) {
+    const { timeoutError, response } = await new Promise(resolve => {
+      state.socket.timeout(5000).emit('room:event', {
+        room: state.room,
+        peerId: state.peerId,
+        message
+      }, (error, result) => resolve({ timeoutError: error, response: result }));
+    });
+    if (!timeoutError && response?.ok) return true;
+    if (!timeoutError && response?.error) {
+      console.warn('Room message delivery failed:', response.error);
+    }
+  }
+
+  if (!state.roomJoined || !['chat-text', 'chat-code', 'chat-file'].includes(message.type)) {
+    showToast('Live chat is reconnecting. Please try again shortly.', '⚠️');
+    return false;
+  }
+  try {
+    await api('/api/rooms/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        room: state.room,
+        peerId: state.peerId,
+        message
+      })
+    });
+    return true;
+  } catch (error) {
+    console.warn('Room chat fallback failed:', error.message);
+    showToast(error.message || 'Room message could not be delivered.', '⚠️');
+    return false;
+  }
 }
 
-function broadcastChatMessage(message) {
-  const payload = JSON.stringify(message);
-  for (const channel of openChatChannels()) channel.send(payload);
+function rememberRoomEvent(id) {
+  if (!id) return false;
+  if (state.roomEventIds.has(id)) return true;
+  state.roomEventIds.add(id);
+  if (state.roomEventIds.size > 500) {
+    state.roomEventIds.delete(state.roomEventIds.values().next().value);
+  }
+  return false;
 }
 
-function waitForChatBuffer(channel) {
-  return new Promise(resolve => {
-    const check = () => {
-      if (channel.bufferedAmount <= CHAT_FILE_CHUNK_SIZE * 8) resolve();
-      else setTimeout(check, 20);
-    };
-    check();
+function handleRoomEvent(message) {
+  if (!message || typeof message !== 'object' || rememberRoomEvent(message.id)) return;
+  if (message.type === 'chat-delete') {
+    document.querySelector(`[data-message-id="${CSS.escape(message.targetId)}"]`)?.remove();
+  } else if (message.type === 'camera-status') {
+    setRemoteCameraState(message.senderId, message.cameraOn === true);
+  } else if (message.type === 'chat-code' && typeof message.code === 'string') {
+    addChatMessage(message.code, message.sender || 'Partner', message.senderId === state.peerId, message.id, true);
+  } else if (message.type === 'chat-file') {
+    addChatFileMessage(message, message.sender || 'Partner', message.senderId === state.peerId, message.id);
+  } else if (message.type === 'chat-text' && typeof message.text === 'string') {
+    addChatMessage(message.text, message.sender || 'Partner', message.senderId === state.peerId, message.id);
+  }
+}
+
+function updateChatStatus() {
+  const count = state.peers.size;
+  if ($('chatStatus')) {
+    $('chatStatus').textContent = state.socketReady
+      ? `${count} participant${count === 1 ? '' : 's'} connected`
+      : state.roomJoined
+        ? state.realtimeReady
+          ? 'Chat active · backup link'
+          : 'Chat active · restoring live link'
+        : 'Connecting…';
+  }
+  setChatControlsEnabled(state.roomJoined);
+}
+
+function handlePeerJoined(peer) {
+  if (!peer || !peer.id || peer.id === state.peerId || state.peers.has(peer.id)) return;
+  state.peers.set(peer.id, peer);
+  createRemoteTile(peer);
+  if (!state.chatOnly) {
+    makePeerConnection(peer);
+    if (shouldCreateOffer(peer)) offerPeer(peer).catch(error => {
+      console.warn('Could not start WebRTC negotiation:', error);
+    });
+  }
+  updateChatStatus();
+}
+
+function handlePeerLeft(peerId) {
+  if (!peerId || peerId === state.peerId) return;
+  removeRemotePeer(peerId);
+  updateChatStatus();
+}
+
+async function startSupabaseRoomChannel() {
+  const config = window.SUPABASE_CONFIG;
+  if (!window.supabase?.createClient || !config?.url || !config.anonKey) {
+    throw new Error('Supabase browser configuration is missing.');
+  }
+  const tokenData = await api(
+    `/api/rooms/realtime-token?room=${encodeURIComponent(state.room)}&peerId=${encodeURIComponent(state.peerId)}`
+  );
+  const supabase = window.supabase.createClient(config.url, config.anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
   });
-}
-
-function setupChatChannel(channel) {
-  state.chatChannels.set(channel._peerId, channel);
-  channel.binaryType = 'arraybuffer';
-  channel.onopen = () => {
-    const connectedCount = openChatChannels().length;
-    if ($('chatStatus')) $('chatStatus').textContent = `${connectedCount} participant${connectedCount === 1 ? '' : 's'} connected`;
-    setChatControlsEnabled(true);
-    if (!state.chatOnly) sendCameraStatus(Boolean(state.stream?.getVideoTracks().length));
-  };
-  channel.onclose = () => {
-    if (state.chatChannels.get(channel._peerId) === channel) state.chatChannels.delete(channel._peerId);
-    const connectedCount = openChatChannels().length;
-    if ($('chatStatus')) $('chatStatus').textContent = connectedCount
-      ? `${connectedCount} participant${connectedCount === 1 ? '' : 's'} connected`
-      : 'Disconnected';
-    setChatControlsEnabled(connectedCount > 0);
-  };
-  channel.onmessage = async (event) => {
-    if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
-      const transferId = state.activeFileTransfers.get(channel._peerId);
-      const transfer = state.fileTransfers.get(transferId);
-      if (!transfer) return;
-      transfer.chunks.push(event.data instanceof Blob ? await event.data.arrayBuffer() : event.data);
-      transfer.received += transfer.chunks.at(-1).byteLength;
-      return;
-    }
-    try {
-      const message = JSON.parse(event.data);
-      if (message.type === 'file-start') {
-        if (message.size > CHAT_FILE_MAX_BYTES) return;
-        state.activeFileTransfers.set(channel._peerId, message.id);
-        state.fileTransfers.set(message.id, {
-          chunks: [],
-          received: 0,
-          name: message.name,
-          size: message.size,
-          mime: message.mime || 'application/octet-stream',
-          sender: message.sender || 'Partner'
-        });
-      } else if (message.type === 'file-end') {
-        const transfer = state.fileTransfers.get(message.id);
-        if (!transfer || transfer.received !== transfer.size) return;
-        const file = new File(transfer.chunks, transfer.name, { type: transfer.mime });
-        addChatFileMessage(file, transfer.sender, false, message.id);
-        state.fileTransfers.delete(message.id);
-        state.activeFileTransfers.delete(channel._peerId);
-      } else if (message.type === 'chat-delete') {
-        document.querySelector(`[data-message-id="${CSS.escape(message.id)}"]`)?.remove();
-      } else if (message.type === 'camera-status') {
-        setRemoteCameraState(channel._peerId, message.cameraOn === true);
-      } else if (message.type === 'chat-code' && typeof message.code === 'string') {
-        addChatMessage(message.code, message.sender || 'Partner', false, message.id, true);
-      } else {
-        addChatMessage(message.text, message.sender || 'Partner', false, message.id);
+  await supabase.realtime.setAuth(tokenData.token);
+  const channel = supabase.channel(`room:${state.room}`, { config: { private: true } });
+  channel
+    .on('broadcast', { event: 'room-event' }, ({ payload }) => handleRoomEvent(payload))
+    .on('broadcast', { event: 'room-signal' }, ({ payload }) => {
+      if (payload?.to === state.peerId) {
+        handleSignal(payload).catch(error => console.warn('Could not process room signal:', error));
       }
+    })
+    .on('broadcast', { event: 'room-peer-joined' }, ({ payload }) => handlePeerJoined(payload?.peer))
+    .on('broadcast', { event: 'room-peer-left' }, ({ payload }) => handlePeerLeft(payload?.peerId))
+    .subscribe(status => {
+      state.realtimeReady = status === 'SUBSCRIBED';
+      updateChatStatus();
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.error('Supabase room realtime subscription failed:', status);
+      }
+    });
+  state.supabase = supabase;
+  state.roomChannel = channel;
+  updateChatStatus();
+  state.realtimeTokenRefresh = setInterval(async () => {
+    try {
+      const refreshed = await api(
+        `/api/rooms/realtime-token?room=${encodeURIComponent(state.room)}&peerId=${encodeURIComponent(state.peerId)}`
+      );
+      await supabase.realtime.setAuth(refreshed.token);
     } catch (error) {
-      console.warn('Chat message ignored', error);
+      console.error('Could not refresh room realtime authorization:', error);
     }
-  };
+  }, 45 * 60 * 1000);
 }
 
-function sendChatMessage() {
+async function sendChatMessage() {
   const input = $('chatInput');
   const value = input?.value || '';
-  if (!value.trim() || !openChatChannels().length) return;
+  if (!value.trim() || !state.roomJoined) return;
   const text = state.codeMode ? value : value.trim();
   const id = crypto.randomUUID();
-  if (state.codeMode) {
-    broadcastChatMessage({ type: 'chat-code', id, code: text, sender: state.name });
-  } else {
-    broadcastChatMessage({ type: 'chat-text', id, text, sender: state.name });
+  const message = state.codeMode
+    ? { type: 'chat-code', id, code: text }
+    : { type: 'chat-text', id, text };
+  if (await broadcastChatMessage(message)) {
+    if (!rememberRoomEvent(id)) {
+      addChatMessage(text, state.name, true, id, state.codeMode);
+    }
+    input.value = '';
+    input.focus();
   }
-  addChatMessage(text, state.name, true, id, state.codeMode);
-  input.value = '';
-  input.focus();
 }
 
 function setChatCodeMode(enabled) {
@@ -599,32 +693,41 @@ function setChatCodeMode(enabled) {
 }
 
 async function sendChatFile(file) {
-  const channels = openChatChannels();
-  if (!file || !channels.length) return;
+  if (!file || !state.roomJoined || !state.supabase) return;
   if (file.size > CHAT_FILE_MAX_BYTES) {
     showToast('Files must be 10 MB or smaller.', '⚠️');
     return;
   }
   const id = crypto.randomUUID();
   try {
-    const data = await file.arrayBuffer();
-    await Promise.all(channels.map(async (channel) => {
-      const transferId = `${id}-${channel._peerId}`;
-      channel.send(JSON.stringify({
-        type: 'file-start',
-        id: transferId,
+    const upload = await api('/api/rooms/files/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        room: state.room,
+        peerId: state.peerId,
         name: file.name,
-        size: file.size,
-        mime: file.type,
-        sender: state.name
-      }));
-      for (let offset = 0; offset < data.byteLength; offset += CHAT_FILE_CHUNK_SIZE) {
-        await waitForChatBuffer(channel);
-        channel.send(data.slice(offset, offset + CHAT_FILE_CHUNK_SIZE));
+        size: file.size
+      })
+    });
+    const { error } = await state.supabase.storage
+      .from(window.SUPABASE_CONFIG.storageBucket)
+      .uploadToSignedUrl(upload.path, upload.token, file, {
+        contentType: file.type || 'application/octet-stream'
+      });
+    if (error) throw error;
+    const message = {
+      type: 'chat-file',
+      id,
+      path: upload.path,
+      name: file.name,
+      size: file.size
+    };
+    if (await broadcastChatMessage(message)) {
+      if (!rememberRoomEvent(id)) {
+        addChatFileMessage(message, state.name, true, id);
       }
-      channel.send(JSON.stringify({ type: 'file-end', id: transferId }));
-    }));
-    addChatFileMessage(file, state.name, true, id);
+    }
   } catch (error) {
     console.warn('File transfer failed:', error);
     showToast('Could not send that file.', '⚠️');
@@ -643,10 +746,6 @@ function makePeerConnection() {
   pc._iceRestartAttempts = 0;
   state.connections.set(peer.id, pc);
   state.peers.set(peer.id, peer);
-  pc.ondatachannel = ({ channel }) => {
-    channel._peerId = peer.id;
-    setupChatChannel(channel);
-  };
   addLocalTracksToPeer(pc);
   pc.onnegotiationneeded = async () => {
     if (!pc._initialOfferSent || !shouldCreateOffer(peer) || pc.signalingState !== 'stable' || pc._offerInProgress) return;
@@ -704,6 +803,18 @@ function makePeerConnection() {
 }
 
 function updateCallStatus() {
+  if (state.chatOnly) {
+    if (state.pollError) {
+      setCallStatus(`Room connection error: ${state.pollError}`, false);
+    } else if (state.peers.size) {
+      const participants = state.peers.size + (state.roomJoined ? 1 : 0);
+      setCallStatus(`Chat active · ${participants} participants`, true);
+    } else {
+      setCallStatus('Waiting for chat participants (1/10)', false);
+    }
+    return;
+  }
+
   const peers = [...state.connections.values()];
   const connected = peers.filter(pc => pc.connectionState === 'connected').length;
   const restarting = peers.some(pc => pc._iceRestartAttempts > 0 && pc.connectionState !== 'connected' && pc.connectionState !== 'closed');
@@ -731,8 +842,6 @@ function createRemoteTile(peer) {
 }
 
 function removeRemotePeer(peerId) {
-  state.chatChannels.get(peerId)?.close();
-  state.chatChannels.delete(peerId);
   state.connections.get(peerId)?.close();
   state.connections.delete(peerId);
   state.peers.delete(peerId);
@@ -746,11 +855,33 @@ function removeRemotePeer(peerId) {
 
 async function signal(peer, message) {
   if (!state.room || !peer) return false;
+  const outgoingMessage = { ...message, signalId: crypto.randomUUID() };
+  const payload = { room: state.room, from: state.peerId, to: peer.id, message: outgoingMessage };
+
+  if (state.socket?.connected && state.socketReady) {
+    try {
+      const response = await new Promise((resolve) => {
+        state.socket.timeout(2500).emit('room:signal', payload, (timeoutError, result) => {
+          resolve({ timeoutError, result });
+        });
+      });
+      if (!response.timeoutError && response.result?.ok) {
+        state.signalError = '';
+        return true;
+      }
+      if (!response.timeoutError && !response.result?.fallback) {
+        throw new Error(response.result?.error || 'Socket.IO rejected the signaling message.');
+      }
+    } catch (error) {
+      console.warn('Socket.IO signaling failed; using room polling:', error.message);
+    }
+  }
+
   try {
     await api('/api/rooms/signal', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room: state.room, from: state.peerId, to: peer.id, message })
+      body: JSON.stringify(payload)
     });
     state.signalError = '';
     updateCallStatus();
@@ -778,12 +909,6 @@ async function applyPendingCandidates(pc) {
 async function offerPeer(peer) {
   const pc = makePeerConnection(peer);
   pc._peerId = peer.id;
-  if (!pc._chatDataChannelCreated) {
-    const channel = pc.createDataChannel('speakspace-chat');
-    channel._peerId = peer.id;
-    setupChatChannel(channel);
-    pc._chatDataChannelCreated = true;
-  }
   if (pc._offerInProgress || pc.signalingState !== 'stable') return;
   pc._offerInProgress = true;
   try {
@@ -802,6 +927,14 @@ async function offerPeer(peer) {
 }
 
 async function handleSignal(packet) {
+  const signalId = packet.message?.signalId || packet.id;
+  if (signalId && state.handledSignals.has(signalId)) return;
+  if (signalId) {
+    state.handledSignals.add(signalId);
+    if (state.handledSignals.size > 500) {
+      state.handledSignals.delete(state.handledSignals.values().next().value);
+    }
+  }
   const peer = state.peers.get(packet.from) || { id: packet.from, name: 'Practice partner' };
   state.peers.set(peer.id, peer);
   createRemoteTile(peer);
@@ -873,6 +1006,9 @@ async function poll() {
     for (const packet of data.signals) {
       await handleSignal(packet);
     }
+    for (const message of data.messages || []) {
+      handleRoomEvent(message);
+    }
     state.pollError = '';
     updateCallStatus();
   } catch (err) {
@@ -887,7 +1023,64 @@ async function poll() {
 function startPolling() {
   clearInterval(state.polling);
   poll();
-  state.polling = setInterval(poll, 600);
+  state.polling = setInterval(poll, 5000);
+}
+
+function startSocketSignaling() {
+  if (!window.SOCKET_SIGNALING_ENABLED || typeof window.io !== 'function') return;
+
+  const socket = window.io(window.location.origin, {
+    path: '/socket.io',
+    autoConnect: false,
+    transports: ['websocket'],
+    upgrade: false,
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000
+  });
+  state.socket = socket;
+  socket.on('connect', () => {
+    state.socketReady = false;
+    updateChatStatus();
+    socket.emit('room:join', { room: state.room, peerId: state.peerId }, (response) => {
+      state.socketReady = response?.ok === true;
+      if (!state.socketReady) {
+        console.warn('Socket.IO room join failed:', response?.error || 'Unknown signaling error');
+        showToast(response?.error || 'Could not restore the room connection.', '⚠️');
+        updateChatStatus();
+        return;
+      }
+      for (const peer of response.peers || []) handlePeerJoined(peer);
+      for (const message of response.messages || []) handleRoomEvent(message);
+      state.pollError = '';
+      state.signalError = '';
+      updateChatStatus();
+      updateCallStatus();
+      if (!state.chatOnly) sendCameraStatus(Boolean(state.stream?.getVideoTracks().length));
+    });
+  });
+  socket.on('room:signal', (packet) => {
+    if (packet?.to !== state.peerId) return;
+    handleSignal(packet).catch((error) => {
+      console.warn('Could not process Socket.IO signaling message:', error);
+    });
+  });
+  socket.on('room:event', handleRoomEvent);
+  socket.on('room:peer-joined', ({ peer }) => handlePeerJoined(peer));
+  socket.on('room:peer-left', ({ peerId }) => handlePeerLeft(peerId));
+  socket.on('disconnect', () => {
+    state.socketReady = false;
+    updateChatStatus();
+    updateCallStatus();
+  });
+  socket.on('connect_error', (error) => {
+    state.socketReady = false;
+    console.warn('Socket.IO connection failed; reconnecting:', error.message);
+    updateChatStatus();
+  });
+  socket.connect();
 }
 
 async function initRoomPage() {
@@ -897,6 +1090,7 @@ async function initRoomPage() {
     return;
   }
   state.room = roomCode;
+  state.peerId = getRoomPeerId(state.room);
   const urlParams = new URLSearchParams(window.location.search);
   const isHost = urlParams.get('host') === '1';
   state.chatOnly = urlParams.get('mode') === 'chat';
@@ -946,14 +1140,23 @@ async function initRoomPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: state.name, room: state.room, peerId: state.peerId, host: isHost, mode: urlParams.get('mode') === 'chat' ? 'chat' : 'video' })
     });
+    state.roomJoined = true;
     state.chatOnly = data.mode === 'chat';
     document.body.classList.toggle('chat-only', state.chatOnly);
+    updateChatStatus();
     data.peers.forEach(peer => {
       state.peers.set(peer.id, peer);
       createRemoteTile(peer);
       if (!state.chatOnly) makePeerConnection(peer);
     });
     if (state.chatOnly) setCallStatus('P2P chat room · no camera or microphone');
+    try {
+      await startSupabaseRoomChannel();
+    } catch (error) {
+      console.error('Could not connect to shared Supabase room realtime:', error);
+      showToast(error.message, '⚠️');
+    }
+    startSocketSignaling();
     startPolling();
   } catch (err) {
     setCallStatus(`Error: ${err.message}`);
@@ -977,9 +1180,7 @@ async function initRoomPage() {
       showToast('Joined without camera or microphone. Check browser permissions.', '⚠️');
     }
   }
-  setCallStatus(state.chatOnly
-    ? (state.peers.size ? 'Connecting to chat participants…' : 'Waiting for chat participants (1/10)')
-    : (state.peers.size ? 'Connecting to participant…' : 'Waiting for participant (1/2)'));
+  updateCallStatus();
   showToast(`Joined room ${state.room}`, '🎉');
 
   // Camera & Mic toggles
@@ -1012,7 +1213,20 @@ async function initRoomPage() {
 
 function leaveRoom() {
   if (state.room) {
-    navigator.sendBeacon('/api/rooms/leave', new Blob([JSON.stringify({ room: state.room, peerId: state.peerId })], { type: 'application/json' }));
+    const leaveData = { room: state.room, peerId: state.peerId };
+    if (state.socket?.connected && state.socketReady) {
+      state.socket.emit('room:leave', leaveData);
+    }
+    navigator.sendBeacon('/api/rooms/leave', new Blob([JSON.stringify(leaveData)], { type: 'application/json' }));
+  }
+  state.socket?.disconnect();
+  state.socket = null;
+  state.socketReady = false;
+  state.roomJoined = false;
+  state.realtimeReady = false;
+  clearInterval(state.realtimeTokenRefresh);
+  if (state.roomChannel && state.supabase) {
+    state.supabase.removeChannel(state.roomChannel);
   }
   clearInterval(state.polling);
   if (state.screenTrack) stopMediaShare();
